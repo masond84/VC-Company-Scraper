@@ -1,1 +1,2 @@
-# VC-Company-Scraper
+# VC Company Scraper
+This code is designed to automate the process of visiting websites for a list of companies, traversing all internal links within each site, and searching for specific keywords on each page. The results are then organized and correlated with the company that owns the website.
