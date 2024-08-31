@@ -5,8 +5,10 @@ from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.common.exceptions import TimeoutException
 from openpyxl import load_workbook
+from openpyxl import load_workbook, Workbook
 from urllib.parse import urljoin, urlparse
 import time
+import re
 
 def format_url(url):
     # Ensure the URL has a proper scheme
@@ -101,7 +103,8 @@ def traverse_site(driver, base_url):
             
             # Search for keywords in the current page
             page_search_results = search_keywords_in_elements(driver)
-            search_results[current_link] = page_search_results
+            if any(page_search_results.values()):
+                search_results[current_link] = page_search_results
 
             # Extract Internal links and update the traversal list
             new_links = extract_internal_links(driver, base_url)
@@ -115,8 +118,11 @@ def traverse_site(driver, base_url):
     return visited_links, search_results
         
 
-def open_company_sites(driver, company_url_dict):
+def open_company_sites(driver, company_url_dict, output_file):
+    search_data = {}
     for company, url in company_url_dict.items():
+        search_data[company] = {"Site": url}
+
         try:
             # Format the URl correctly
             formmated_url = format_url(url)
@@ -125,16 +131,23 @@ def open_company_sites(driver, company_url_dict):
             driver.get(formmated_url)
             
             WebDriverWait(driver, 10).until(EC.presence_of_element_located((By.TAG_NAME, 'title')))
+            _, search_results = traverse_site(driver, formmated_url)
 
-            # Call the traverse_site function to visit all internal pages
-            visted_pages, search_results = traverse_site(driver, formmated_url)
-            print(f"Total pages visited for {company}: {len(visted_pages)}")
-            print(f"Search results for {company}: {search_results}")
-
+            # Consolidate results into the search_data dictionary
+            for page_url, keywords_found in search_results.items():
+                for keyword, elements in keywords_found.items():
+                    if elements:
+                        if keyword not in search_data[company]:
+                            search_data[company][keyword] = f"Yes; {page_url}; {elements[0]}"
+                        else:
+                            search_data[company][keyword] += f"; {page_url}; {elements[0]}"
+            
         except TimeoutException:
             print(f"Timeout while accessing {company} at {url}")
         except Exception as e:
             print(f"Failed to access {company} at {url}: {e}")
+    
+    save_to_excel(search_data, output_file)
 
 """
 Function to Search Keywords
@@ -143,25 +156,23 @@ Function to Search Keywords
 """
 def search_keywords(page_content):
     keywords = [
-        'Private Equity',
-        'Capital Markets',
-        'Leverage Finance', 
-        'Investment Banking',
-        "Investment Firm",
-        'b2b saas',
-        'pre-seed',
-        'Southeast',
-        'latin',
-        'Hispanic',
-        'Florida'
+        r'private\s*equity',
+        r'capital\s*markets',
+        r'leverage\s*finance', 
+        r'investment\s*banking',
+        r'investment\s*firm',
+        r'b2b\s*saas',
+        r'pre[-\s]*seed',
+        r'southeast',
+        r'latin',
+        r'hispanic',
+        r'florida'
     ]
     results = {}
 
     for keyword in keywords:
-        if keyword.lower() in page_content:
+        if re.search(keyword, page_content, re.IGNORECASE):
             results[keyword] = "Yes"
-        else:
-            results[keyword] = "No"
 
     return results
 
@@ -170,32 +181,78 @@ def search_keywords_in_elements(driver):
     results = search_keywords(page_content)
 
     elements_results = {}
-    for keyword in results:
-        elements = driver.find_elements(By.XPATH, f"//*[contains(text(), '{keyword.lower()}')]")
-        if elements:
-            elements_results[keyword] = [element.get_attribute('outerHTML') for element in elements]
-        else:
-            elements_results[keyword] = []
-    
+    for keyword, found in results.items():
+        all_text_elements = driver.find_elements(By.XPATH, "//*[text()]")  # Find all elements with text
+
+        matched_elements = []
+        for element in all_text_elements:
+            text = element.text.lower()
+            if re.search(keyword, text):
+                matched_elements.append(element.get_attribute('outerHTML'))
+        
+        if matched_elements:
+            elements_results[keyword] = matched_elements
+
     return elements_results
+
+"""
+Function to save to an excel file
+"""
+def save_to_excel(data, output_file):
+    # Open or create a workbook
+    try:
+        workbook = load_workbook(output_file)
+        sheet = workbook.active
+    except FileNotFoundError:
+        workbook = Workbook()
+        sheet = workbook.active
+        headers = ['Company', 'Site']
+        sheet.append(headers)
     
+    keyword_set = set()
+
+    for company_data in data.values():
+        for keyword in company_data.keys():
+            if keyword != 'Site':
+                keyword_set.add(keyword)
+    
+    # Extend headers with sorted keywords and append them if not already added
+    current_headers = [cell.value for cell in sheet[1]]
+    for keyword in sorted(keyword_set):
+        if keyword not in current_headers:
+            current_headers.append(keyword)
+    
+    sheet.delete_rows(1)  # Remove old header row
+    sheet.append(current_headers)  # Append updated headers
+
+    # Append each row of company data
+    for company, results in data.items():
+        row = [company, results.get('Site', '')]
+        for keyword in sorted(keyword_set):
+            row.append(results.get(keyword, ""))
+        sheet.append(row)
+    
+    # Save the workbook after each row is added
+    workbook.save(output_file)
+
 """
 Main Scraper Function: The main function will load data, initialize the driver, iterate over each company URL, and use the keyword search function.
 """
-def main_scraper(file_path):
+def main_scraper(file_path, output_file):
     # Load the data from the excel file
     company_url_dict = load_test_data(file_path)
 
     driver = init_driver()
 
     # Open each company's website
-    open_company_sites(driver, company_url_dict)
+    open_company_sites(driver, company_url_dict, output_file)
 
     driver.quit()
 
 #### MAIN CODE ####
 #file_path = r"C:\Users\dmaso\OneDrive\Documents\002 Projects\002 Freelance\1 - Javier Gutierrez\Scraper00\data\Aug 28 - VCs.xlsx"
 file_path = r"C:\Users\dmaso\OneDrive\Documents\002 Projects\002 Freelance\1 - Javier Gutierrez\Scraper00\data\Test-Data.xlsx"
+output_file = r"C:\Users\dmaso\OneDrive\Documents\002 Projects\002 Freelance\1 - Javier Gutierrez\Scraper00\results.xlsx"
 """
 # Test the load_excel_file function
 companies_url_dict = load_excel_data(file_path)
@@ -203,4 +260,4 @@ companies_url_dict = load_excel_data(file_path)
 print(f"Companies: {companies_url_dict}")
 """
 
-main_scraper(file_path)
+main_scraper(file_path, output_file)
